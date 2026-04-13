@@ -24,9 +24,9 @@ WD     = "754x719"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Cookie": f"c_user={C_USER}; xs={XS}; datr={DATR}; fr={FR}; sb={SB}; wd={WD}",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "identity",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -60,17 +60,24 @@ def get_latest_post():
             log(f"⚠️  Ошибка: {resp.status_code}")
             return None, None
 
-        # Find post IDs in page HTML
-        # Pattern 1: pfbid format
-        matches = re.findall(r'pfbid\w+', resp.text)
-        # Pattern 2: story_fbid format
-        matches2 = re.findall(r'"story_fbid":"(\d+)"', resp.text)
-        # Pattern 3: /posts/ format
-        matches3 = re.findall(rf'facebook\.com/permalink/\?story_fbid=(\d+)', resp.text)
-        # Pattern 4: direct post ID
-        matches4 = re.findall(r'"post_id":"(\d+)"', resp.text)
+        # Decode content properly
+        try:
+            html = resp.content.decode("utf-8")
+        except Exception:
+            html = resp.text
 
-        all_ids = list(set(matches2 + matches3 + matches4))
+        # Pattern 1: pfbid format
+        matches = re.findall(r'pfbid[A-Za-z0-9]+', html)
+        # Pattern 2: story_fbid
+        matches2 = re.findall(r'"story_fbid":"(\d+)"', html)
+        # Pattern 3: post_id
+        matches3 = re.findall(r'"post_id":"(\d+)"', html)
+        # Pattern 4: /posts/ID
+        matches4 = re.findall(r'/posts/(\d+)', html)
+        # Pattern 5: top_level_post_id
+        matches5 = re.findall(r'"top_level_post_id":"(\d+)"', html)
+
+        all_ids = list(set(matches2 + matches3 + matches4 + matches5))
 
         if matches:
             latest_pfbid = matches[0]
@@ -79,13 +86,15 @@ def get_latest_post():
             return latest_pfbid, post_url
 
         if all_ids:
-            latest_id = max(all_ids, key=lambda x: int(x) if x.isdigit() else 0)
-            post_url = f"https://www.facebook.com/permalink.php?story_fbid={latest_id}&id={FB_PAGE_ID}"
-            log(f"✅ Найден пост: {post_url}")
-            return latest_id, post_url
+            numeric = [x for x in all_ids if x.isdigit() and len(x) > 10]
+            if numeric:
+                latest_id = max(numeric, key=lambda x: int(x))
+                post_url = f"https://www.facebook.com/permalink.php?story_fbid={latest_id}&id={FB_PAGE_ID}"
+                log(f"✅ Найден пост: {post_url}")
+                return latest_id, post_url
 
         log("⚠️  Посты не найдены в HTML")
-        log(f"📄 HTML preview: {resp.text[:500]}")
+        log(f"📄 HTML preview: {html[:300]}")
         return None, None
 
     except Exception as e:
