@@ -2,38 +2,22 @@ import requests
 import random
 import time
 import os
-import re
 from datetime import datetime
 
-JAP_API_KEY    = "ec2fb6c8f5a4ea7ba6cf532e87a09895"
-JAP_API_URL    = "https://justanotherpanel.com/api/v2"
-JAP_SERVICE    = 9604
-QUANTITY_MIN   = 800
-QUANTITY_MAX   = 1500
-FB_PAGE_ID     = "100081997113052"
-CHECK_INTERVAL = 60
+# ══════════════════════════════════════
+#  НАСТРОЙКИ
+# ══════════════════════════════════════
+JAP_API_KEY   = "ec2fb6c8f5a4ea7ba6cf532e87a09895"
+JAP_API_URL   = "https://justanotherpanel.com/api/v2"
+JAP_SERVICE   = 9604
+QUANTITY_MIN  = 500
+QUANTITY_MAX  = 1000
+
+APIFY_TOKEN   = "apify_api_GQnmhAbG7jgFdjw0SYh6APbtpZgkek0W7GCA"
+FB_PAGE_URL   = "https://www.facebook.com/profile.php?id=100081997113052"
+
+CHECK_INTERVAL = 300  # проверять каждые 5 минут
 STATE_FILE     = "last_post_id.txt"
-
-C_USER = "61553351803414"
-XS     = "8%3AeGYkn8717BMe-g%3A2%3A1774503965%3A-1%3A-1%3A%3AAcx7QLCab5zvbi-lFeNFfZQcV-306iuKpPhQ-CMII9A"
-DATR   = "gvGqaR00HB8BBQCtWvA_ZrBw"
-FR     = "1OB7RBWOZkX1xBj3q.AWdGZvbe7aj44os6vwRpRCJ_yyTD61uZlfP5i6ymIVp0HkEp4Ck.Bp3GP7..AAA.0.0.Bp3GP7.AWfFHkYvPlNCbCa6-PGu_kEQVWs"
-SB     = "hfGqaZIWmBX2PQV9iqh9Tr1V"
-WD     = "754x719"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Cookie": f"c_user={C_USER}; xs={XS}; datr={DATR}; fr={FR}; sb={SB}; wd={WD}",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "identity",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Referer": "https://www.facebook.com/",
-}
 
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -51,55 +35,70 @@ def save_last_post_id(post_id):
         f.write(str(post_id))
 
 def get_latest_post():
+    """Получаем последний пост через Apify Facebook Posts Scraper"""
     try:
-        url = f"https://www.facebook.com/profile.php?id={FB_PAGE_ID}"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        log(f"📥 Facebook: {resp.status_code}")
+        ACTOR_ID = "KoJrdxJCTtpon81KY"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {APIFY_TOKEN}",
+        }
 
-        if resp.status_code != 200:
-            log(f"⚠️  Ошибка: {resp.status_code}")
-            return None, None
+        # Запускаем актор и ждём результат синхронно
+        log("📤 Запускаю Apify Facebook Posts Scraper...")
+        run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
+        payload = {
+            "startUrls": [{"url": FB_PAGE_URL}],
+            "resultsLimit": 20,
+            "scrapePostsUntilDate": "",
+        }
+        resp = requests.post(
+            run_url,
+            json=payload,
+            headers=headers,
+            timeout=120,
+            params={"token": APIFY_TOKEN}
+        )
+        log(f"📥 Apify: {resp.status_code}")
 
-        # Decode content properly
+        if resp.status_code not in [200, 201]:
+            log(f"❌ Ошибка: {resp.text[:300]}")
+            return None, None, []
+
         try:
-            html = resp.content.decode("utf-8")
+            data = resp.json()
         except Exception:
-            html = resp.text
+            log(f"❌ Ошибка парсинга JSON: {resp.text[:200]}")
+            return None, None, []
 
-        # Pattern 1: pfbid format
-        matches = re.findall(r'pfbid[A-Za-z0-9]+', html)
-        # Pattern 2: story_fbid
-        matches2 = re.findall(r'"story_fbid":"(\d+)"', html)
-        # Pattern 3: post_id
-        matches3 = re.findall(r'"post_id":"(\d+)"', html)
-        # Pattern 4: /posts/ID
-        matches4 = re.findall(r'/posts/(\d+)', html)
-        # Pattern 5: top_level_post_id
-        matches5 = re.findall(r'"top_level_post_id":"(\d+)"', html)
+        # Apify возвращает список постов напрямую
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = data.get("items", [data])
+        else:
+            items = []
 
-        all_ids = list(set(matches2 + matches3 + matches4 + matches5))
+        log(f"📊 Найдено постов: {len(items)}")
 
-        if matches:
-            latest_pfbid = matches[0]
-            post_url = f"https://www.facebook.com/permalink.php?story_fbid={latest_pfbid}&id={FB_PAGE_ID}"
-            log(f"✅ Найден пост (pfbid): {post_url}")
-            return latest_pfbid, post_url
+        if not items:
+            log("⚠️  Посты не найдены")
+            return None, None, []
 
-        if all_ids:
-            numeric = [x for x in all_ids if x.isdigit() and len(x) > 10]
-            if numeric:
-                latest_id = max(numeric, key=lambda x: int(x))
-                post_url = f"https://www.facebook.com/permalink.php?story_fbid={latest_id}&id={FB_PAGE_ID}"
-                log(f"✅ Найден пост: {post_url}")
-                return latest_id, post_url
+        # Сортируем по timestamp чтобы взять самый свежий
+        def get_ts(item):
+            return item.get("timestamp", 0) or 0
+        items_sorted = sorted(items, key=get_ts, reverse=True)
+        latest = items_sorted[0]
 
-        log("⚠️  Посты не найдены в HTML")
-        log(f"📄 HTML preview: {html[:300]}")
-        return None, None
+        post_id = latest.get("postId") or latest.get("id") or str(latest.get("timestamp", ""))
+        post_url = latest.get("url") or latest.get("postUrl") or FB_PAGE_URL
+
+        log(f"✅ Последний пост: {post_url} | postId: {post_id} | time: {latest.get('time', '')}")
+        return str(post_id), post_url, items_sorted
 
     except Exception as e:
-        log(f"❌ Ошибка: {e}")
-        return None, None
+        log(f"❌ Ошибка Apify: {e}")
+        return None, None, []
 
 def create_jap_order(post_url):
     quantity = random.randint(QUANTITY_MIN, QUANTITY_MAX)
@@ -111,19 +110,17 @@ def create_jap_order(post_url):
         "quantity": quantity,
     }
     try:
-        log(f"📤 Отправляю заказ: service={JAP_SERVICE}, quantity={quantity}")
+        log(f"📤 Заказ JAP: service={JAP_SERVICE}, qty={quantity}")
         resp = requests.post(JAP_API_URL, data=payload, timeout=15)
-        log(f"📥 Ответ JAP: {resp.status_code} | {repr(resp.text[:300])}")
+        log(f"📥 JAP: {resp.status_code} | {repr(resp.text[:200])}")
         if not resp.text.strip():
-            log("❌ Пустой ответ от JAP")
+            log("❌ Пустой ответ JAP")
             return
         data = resp.json()
         if "order" in data:
-            log(f"✅ Заказ создан! ID: {data['order']} | Кол-во: {quantity} | {post_url}")
+            log(f"✅ Заказ создан! ID: {data['order']} | Услуга: {JAP_SERVICE} | Кол-во: {quantity}")
         elif "error" in data:
             log(f"❌ Ошибка JAP: {data['error']}")
-        else:
-            log(f"⚠️  Неизвестный ответ: {data}")
     except Exception as e:
         log(f"❌ Ошибка заказа: {e}")
 
@@ -138,32 +135,50 @@ def check_balance():
         log(f"❌ Ошибка баланса: {e}")
 
 def main():
-    log("🚀 Бот запущен!")
-    log(f"📘 Facebook страница: {FB_PAGE_ID} | Услуга: {JAP_SERVICE} | Кол-во: {QUANTITY_MIN}–{QUANTITY_MAX}")
+    log("🚀 Facebook бот запущен (через Apify)!")
+    log(f"📘 Страница: {FB_PAGE_URL}")
+    log(f"⚙️  Услуга: {JAP_SERVICE} | Кол-во: {QUANTITY_MIN}-{QUANTITY_MAX}")
+    log(f"🔄 Проверка каждые {CHECK_INTERVAL//60} минут")
     check_balance()
 
     last_id = load_last_post_id()
 
     if not last_id:
-        latest_id, _ = get_latest_post()
+        latest_id, _, _ = get_latest_post()
         if latest_id:
             save_last_post_id(latest_id)
             last_id = latest_id
             log(f"📌 Первый запуск. Последний пост: #{latest_id}. Жду новые...")
 
     while True:
+        time.sleep(CHECK_INTERVAL)
         try:
-            latest_id, post_url = get_latest_post()
-            if latest_id and latest_id != last_id:
-                log(f"🆕 Новый пост: {post_url}")
-                create_jap_order(post_url)
+            latest_id, post_url, all_posts = get_latest_post()
+            if latest_id and latest_id != last_id and all_posts:
+                # Find all posts newer than last known
+                new_posts = []
+                for post in all_posts:
+                    pid = str(post.get("postId") or post.get("id") or "")
+                    pts = post.get("timestamp", 0) or 0
+                    if pid and pid != last_id and pts > 0:
+                        new_posts.append(post)
+                
+                if not new_posts:
+                    new_posts = [all_posts[0]]
+                
+                log(f"🆕 Найдено новых постов: {len(new_posts)}")
+                for post in new_posts:
+                    purl = post.get("url") or post.get("postUrl") or FB_PAGE_URL
+                    log(f"🆕 Обрабатываю пост: {purl}")
+                    create_jap_order(purl)
+                    time.sleep(3)
+                
                 save_last_post_id(latest_id)
                 last_id = latest_id
             else:
                 log(f"🔍 Нет новых постов (последний: #{last_id})")
         except Exception as e:
             log(f"❌ Ошибка: {e}")
-        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
